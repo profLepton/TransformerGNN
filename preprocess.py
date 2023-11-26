@@ -1,5 +1,6 @@
-from multiprocessing import Pool
+import os
 import random
+from multiprocessing import Pool
 
 
 import torch
@@ -13,9 +14,16 @@ from config import Config
 
 ### Loads title word embeddings with correct size if available, else creates them.
 
+if not os.path.exists("saved_files"):
+    os.mkdir("saved_files")
+
+
 config = Config()
 
 file_name = f"saved_files/title_embeddings_{config.vector_size}.pt"
+
+
+
 
 
 # Loading all titles
