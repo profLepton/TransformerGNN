@@ -10,6 +10,8 @@ setup(
     install_requires=[
         "tqdm",
         "torch",
-        "gensim"
+        "gensim",
+        "numpy",
+        "networkx",
     ],
 )
