@@ -53,8 +53,8 @@ class MLP(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        self.c_fc = nn.Linear(config.vector_size, config.hidden_size, bias=config.bias)
-        self.c_proj = nn.Linear(config.hidden_size, config.vector_size, bias=config.bias)
+        self.c_fc = nn.Linear(config.vector_size, config.vector_size, bias=config.bias)
+        self.c_proj = nn.Linear(config.vector_size, config.vector_size, bias=config.bias)
         self.dropout = nn.Dropout(config.dropout)
         self.gelu = nn.GELU()
 
@@ -82,12 +82,12 @@ class Block(nn.Module):
 class GPT(nn.Module):
 
     def __init__(self, config):
-        super().__init__("GPT")
+        super().__init__()
 
         self.config = config
 
         self.transformer = nn.ModuleDict(dict(
-            wte = nn.Embedding(config.num_nodes, config.vecotr_size),
+            wte = nn.Embedding(config.num_nodes+1, config.vector_size),
             drop = nn.Dropout(config.dropout),
             h = nn.ModuleList([Block(config) for _ in range(config.num_layers)]),
             Ln_f = LayerNorm(config.vector_size, config.bias),
@@ -96,7 +96,7 @@ class GPT(nn.Module):
 
     def initialize(self, title_word_embeddings, adj_matrices, neighbor_dict):
         
-        self.transformer.wte.weight.data.copy_(title_word_embeddings)
+        self.transformer.wte.weight.data.copy_(torch.cat([title_word_embeddings, torch.zeros(1, self.config.vector_size, device=self.config.device)]))  
         self.transformer.wte.weight.requires_grad = False
         
         self.adj_matrices = adj_matrices
@@ -110,9 +110,11 @@ class GPT(nn.Module):
         b, t = context_idx.size()
         
         context_emb = self.transformer.wte(context_idx)
-        negatives_emb = self.transformer.wte(negatives)
+        if negatives is not None:
+            negatives_emb = self.transformer.wte(negatives)
 
-        neighborhood = self.neighbor_dict[context_idx[:, 0]]     
+        neighborhood = neighborhood = torch.cat(list(map(self.neighbor_dict.get, context_idx[:, 0].tolist())), dim=0)
+
         neighborhood_emb = self.transformer.wte(neighborhood)
      
         adj_matrix = self.adj_matrices[context_idx[:, 0]]
@@ -123,24 +125,23 @@ class GPT(nn.Module):
         ### Save the new embeddings
         self.transformer.wte.weight.data[neighborhood] = neighborhood_emb
 
-        first_node = neighborhood_emb[:, 0]
-
-        n_sim = first_node @ context_emb.transpose(-1, -2)
-        n_sim = n_sim.squeeze(-1)
-
-        n_sim = F.log_softmax(n_sim, dim=-1)
+        first_node = neighborhood_emb[:, 0].unsqueeze(1)
+        
+        n_sim = torch.bmm(first_node,  context_emb.transpose(-1, -2))
+        n_sim = n_sim.squeeze(1)
+        n_sim = F.logsigmoid(-n_sim)
         
 
         if negatives is None:
-            return -torch.mean(n_sim, dim=-1)
+            return -torch.mean(torch.sum(n_sim, dim=-1), dim=-1)
+
         
         neg_sim = first_node @ negatives_emb.transpose(-1, -2)
-        neg_sim = neg_sim.squeeze(-1)
+        neg_sim = neg_sim.squeeze(1)
+        neg_sim = F.logsigmoid(-neg_sim)
+        
 
-        neg_sim = F.log_softmax(neg_sim, dim=-1)
-
-        loss = -torch.mean(n_sim, dim=-1) - torch.mean(neg_sim, dim=-1)
-
+        loss = -torch.mean(torch.sum(n_sim, dim=-1) + torch.sum(neg_sim, dim=-1))
         return loss
     
     def get_embeddings(self, idx):

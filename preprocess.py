@@ -24,7 +24,7 @@ file_name = f"saved_files/title_embeddings_{config.vector_size}.pt"
 
 
 
-
+G = nx.read_edgelist("./data/network.txt", nodetype=int)
 
 # Loading all titles
 title_file_path = "data/titles.txt"
@@ -120,7 +120,7 @@ def get_walks_np(nodes, num_walks, walk_length, p, q):
 
                 else:
                     break
-            walks[n*10 + i] = walk
+            walks[n*config.num_walks + i] = walk
 
     return walks
 
@@ -152,7 +152,7 @@ try:
 except:
     print("Generating walks")
     # Generate walks
-    G = nx.read_edgelist("./data/network.txt", nodetype=int)
+    
 
     walks = get_walks_parallel_np(G, config.num_walks, config.walk_length, p=config.P, q=config.Q, num_workers=config.num_workers)
 
@@ -172,7 +172,6 @@ def get_x_train( i, j, window_size=2, n_samples=5):
 def get_x_train_parallel(walks, window_size=config.window_size, num_workers=config.num_workers):
     x_train = []
     indices =  [(i-window_size, i+window_size) for i in range(window_size, config.walk_length-window_size)]
-
     with Pool(num_workers) as pool:
         x_train = pool.starmap(get_x_train, indices)
 
@@ -216,7 +215,47 @@ def get_batches(x_train, negative_samples, batch_size=config.batch_size):
 
 train_batches, negative_sample_batches = get_batches(x_train, negative_samples, batch_size=config.batch_size)
 
+neighbor_dict = {}
+
+def get_radius_i_neighbors(G, node, radius):
+    neighbors = [node]
+    for i in range(radius):
+        neighbors.extend([nbr for n in neighbors for nbr in G.neighbors(n)])
+    return list(set(neighbors))
+
+maax = 0
+for node in tqdm(G.nodes()):
+
+    neighborhood_tensor = torch.tensor(get_radius_i_neighbors(G, node, config.neighborhood_radius)[:config.neighborhood_size], dtype=torch.int32, device=config.device, requires_grad=False)
+
+    if len(neighborhood_tensor) < config.neighborhood_size:
+        # Pad with config.num_nodes
+        neighborhood_tensor = torch.cat([neighborhood_tensor, torch.ones(config.neighborhood_size-len(neighborhood_tensor), dtype=torch.int32, device=config.device, requires_grad=False)*config.num_nodes])
+
+    neighbor_dict[node] = neighborhood_tensor.unsqueeze(0) 
+
+    maax = max(maax, len(neighbor_dict[node]))
+
+print(f"max neighbors: {maax}")
+
+adj_dict = {}
+
+for node in tqdm(G.nodes()):
+    sg = G.subgraph(neighbor_dict[node].squeeze(0).cpu().numpy())
+    adj = nx.adjacency_matrix(sg).todense()
+
+    if adj.shape[0] < config.neighborhood_size:
+        # Pad with only zeros
+        adj = np.pad(adj, (0, config.neighborhood_size-adj.shape[0]),  'constant', constant_values=0)
+
+    adj_dict[node] = torch.tensor(adj + np.eye(adj.shape[0]), dtype=torch.float32, device=config.device, requires_grad=False)
+
+adj_matrices = torch.stack(list(adj_dict.values()), dim=0)
 
 print(f"Number of batches: ", len(train_batches))
 
 torch.save(train_batches, "saved_files/train_batches.pt")
+torch.save(negative_sample_batches, "saved_files/negative_sample_batches.pt")
+
+torch.save(neighbor_dict, "saved_files/neighbor_dict.pt")
+torch.save(adj_matrices, "saved_files/adj_matrices.pt")
